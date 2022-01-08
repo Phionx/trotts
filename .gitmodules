@@ -1,0 +1,3 @@
+[submodule "guidelines"]
+	path = guidelines
+	url = https://github.com/qiskit-community/open-science-prize-2021.git
