@@ -81,6 +81,33 @@ def gen_trott_gate():
     Trott_gate = Trott_qc.to_instruction()
     return Trott_gate
 
+def gen_3cnot_trott_gate():
+    t = Parameter('t') # parameterize variable t
+    
+    num_qubits = 3
+
+    Trott_qr = QuantumRegister(num_qubits)
+    Trott_qc = QuantumCircuit(Trott_qr, name='Trot')
+
+    for i in range(0, num_qubits - 1):
+        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+        Trott_qc.rx(2*t - np.pi/2, Trott_qr[i])
+        Trott_qc.h(Trott_qr[i])
+        Trott_qc.rz(2*t, Trott_qr[i+1])
+        
+        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+        Trott_qc.h(Trott_qr[i])
+        Trott_qc.rz(-2*t, Trott_qr[i+1])
+        
+        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+        Trott_qc.rx(np.pi/2, Trott_qr[i])
+        Trott_qc.rx(-np.pi/2, Trott_qr[i+1])
+
+    # Convert custom quantum circuit into a gate
+    Trott_gate = Trott_qc.to_instruction()
+    return Trott_gate
+
+
 def gen_st_qcs(trott_gate: Instruction, trotter_steps: int):
     """
     Args:
@@ -227,7 +254,7 @@ def gen_results(qcs, backend = None, results = None, label="data/sim", filename=
     return results
 
 
-def gen_qpu_jobs(qcs, backend = None, label="data/qpu", shots=8192, reps=8):
+def gen_qpu_jobs(qcs, backend = None, label="data/qpu", results = None, filename=None, shots=8192, reps=8):
     """
     This function submits jobs.
     This may be preferred for jobs run on real qpus.
@@ -236,20 +263,21 @@ def gen_qpu_jobs(qcs, backend = None, label="data/qpu", shots=8192, reps=8):
     filename = filename if filename is not None else label + "_jobs_" + now.strftime("%Y%m%d__%H%M%S") + ".npy"
     
     # Generate and submit all jobs first
-    jobs = {}
+    job_ids = {}
     for num_trott_steps, st_qcs in tqdm(qcs.items()):
         print("="*20)
-        if num_trott_steps in results["data"]:
+        if results is not None and num_trott_steps in results["data"]:
             print(f"Result already stored for trott_steps = {num_trott_steps}")
             continue
 
         print(f"Submitting jobs with trott_steps = {num_trott_steps}")
-        jobs[num_trott_steps] = gen_jobs_single(st_qcs, backend = backend, shots=shots, reps=reps)
-        np.save(filename, jobs)
+        jobs_list = gen_jobs_single(st_qcs, backend = backend, shots=shots, reps=reps)
+        job_ids[num_trott_steps] = [job.job_id() for job in jobs_list]
+        np.save(filename, job_ids)
         
-    return jobs
+    return job_ids
 
-def gen_qpu_results(qcs, jobs, backend, results = None, label="data/qpu", filename=None, shots=8192, reps=8):
+def gen_qpu_results(qcs, job_ids, backend, results = None, label="data/qpu", filename=None, shots=8192, reps=8):
     """
     This function monitors and stores results from existing jobs. 
     This may be preferred for jobs run on real qpus.
@@ -260,7 +288,8 @@ def gen_qpu_results(qcs, jobs, backend, results = None, label="data/qpu", filena
     results = results if results is not None else {"properties": {"backend": backend}, "data":{}}
     
     # Then, monitor jobs and store them as they complete
-    for num_trott_steps, job_list in tqdm(jobs.items()):
+    for num_trott_steps, job_ids_list in tqdm(job_ids.items()):
+        job_list = [backend.retrieve_job(job_id) for job_id in job_ids_list]
         print("="*20)
         print(f"Monitoring jobs with trott_steps = {num_trott_steps}")
         gen_job_monitors_single(job_list)
