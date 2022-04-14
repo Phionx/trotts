@@ -199,14 +199,14 @@ def gen_result_single(st_qcs, backend = None, shots=8192, reps=8):
     gen_job_monitors_single(jobs)
     return extract_results_single(jobs, st_qcs)
 
-def gen_results(qcs, backend = None, results = None, label="results", shots=8192, reps=8):
+def gen_results(qcs, backend = None, results = None, label="data/sim", filename=None, shots=8192, reps=8):
     """
     This function submits, monitors, and stores all jobs for a single trott_step size 
     and then moves on to the next trott_step size. This may be preferred for jobs run
     on simulators.
     """
     now = datetime.now()
-    filename = label + "_" + now.strftime("%Y%d%m__%H%M%S") + ".npy"
+    filename = filename if filename is not None else label + "_results_" + now.strftime("%Y%m%d__%H%M%S") + ".npy"
     
     
     backend = QasmSimulator() if backend is None else backend
@@ -226,14 +226,14 @@ def gen_results(qcs, backend = None, results = None, label="results", shots=8192
         np.save(filename, results)
     return results
 
-def gen_results_qpu(qcs, backend, results = None, label="results", shots=8192, reps=8):
+
+def gen_qpu_jobs(qcs, backend = None, label="data/qpu", shots=8192, reps=8):
     """
-    This function submits all jobs first, and then monitors and stores the results. 
+    This function submits jobs.
     This may be preferred for jobs run on real qpus.
     """
     now = datetime.now()
-    filename = label + "_" + now.strftime("%Y%d%m__%H%M%S") + ".npy"
-    results = results if results is not None else {"properties": {"backend": backend}, "data":{}}
+    filename = filename if filename is not None else label + "_jobs_" + now.strftime("%Y%m%d__%H%M%S") + ".npy"
     
     # Generate and submit all jobs first
     jobs = {}
@@ -245,6 +245,19 @@ def gen_results_qpu(qcs, backend, results = None, label="results", shots=8192, r
 
         print(f"Submitting jobs with trott_steps = {num_trott_steps}")
         jobs[num_trott_steps] = gen_jobs_single(st_qcs, backend = backend, shots=shots, reps=reps)
+        np.save(filename, jobs)
+        
+    return jobs
+
+def gen_qpu_results(qcs, jobs, backend, results = None, label="data/qpu", filename=None, shots=8192, reps=8):
+    """
+    This function monitors and stores results from existing jobs. 
+    This may be preferred for jobs run on real qpus.
+    """
+
+    now = datetime.now()
+    filename = filename if filename is not None else label + "_results_" + now.strftime("%Y%m%d__%H%M%S") + ".npy"
+    results = results if results is not None else {"properties": {"backend": backend}, "data":{}}
     
     # Then, monitor jobs and store them as they complete
     for num_trott_steps, job_list in tqdm(jobs.items()):
@@ -258,7 +271,6 @@ def gen_results_qpu(qcs, backend, results = None, label="results", shots=8192, r
         np.save(filename, results)
         
     return results
-
 
 # Analysis
 # ================================================================
