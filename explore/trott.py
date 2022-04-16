@@ -6,6 +6,7 @@ Trott Functions
 from typing import List
 import copy
 from datetime import datetime
+import itertools
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -22,6 +23,10 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import qutip as qt
+
+
+DEFAULT_SHOTS = 8192
+DEFAULT_REPS = 8
 
 # Prepare Circuits
 # ================================================================
@@ -188,7 +193,7 @@ def state_tomo(result, st_qcs):
 # ================================================================
 
 
-def gen_jobs_single(st_qcs, backend = None, shots=8192, reps=8):
+def gen_jobs_single(st_qcs, backend = None, shots=8192, reps=DEFAULT_REPS):
     backend = QasmSimulator() if backend is None else backend
 
     # create jobs
@@ -221,12 +226,12 @@ def extract_results_single(jobs, st_qcs):
         rhos.append(rho)
     return rhos, raw_results
 
-def gen_result_single(st_qcs, backend = None, shots=8192, reps=8):
+def gen_result_single(st_qcs, backend = None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS):
     jobs = gen_jobs_single(st_qcs, backend=backend, shots=shots, reps=reps)
     gen_job_monitors_single(jobs)
     return extract_results_single(jobs, st_qcs)
 
-def gen_results(qcs, backend = None, results = None, label="data/sim", filename=None, shots=8192, reps=8):
+def gen_results(qcs, backend = None, results = None, label="data/sim", filename=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS):
     """
     This function submits, monitors, and stores all jobs for a single trott_step size 
     and then moves on to the next trott_step size. This may be preferred for jobs run
@@ -254,7 +259,7 @@ def gen_results(qcs, backend = None, results = None, label="data/sim", filename=
     return results
 
 
-def gen_qpu_jobs(qcs, backend = None, label="data/qpu", results = None, filename=None, shots=8192, reps=8):
+def gen_qpu_jobs(qcs, backend = None, label="data/qpu", results = None, filename=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS):
     """
     This function submits jobs.
     This may be preferred for jobs run on real qpus.
@@ -277,7 +282,7 @@ def gen_qpu_jobs(qcs, backend = None, label="data/qpu", results = None, filename
         
     return job_ids
 
-def gen_qpu_results(qcs, job_ids, backend, results = None, label="data/qpu", filename=None, shots=8192, reps=8):
+def gen_qpu_results(qcs, job_ids, backend, results = None, label="data/qpu", filename=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS):
     """
     This function monitors and stores results from existing jobs. 
     This may be preferred for jobs run on real qpus.
@@ -326,27 +331,36 @@ def add_dicts(a,b):
         c[key] = a.get(key,0) + b.get(key, 0)
     return c
 
-def calc_parity(pauli_string, readout_string, active_spots):
-    """
-    Args:
-        b (str): e.g. '0x6'
-        active_spots (List[int]): e.g. (1, 1, 0)
-    """
+
+def calc_adjusted_pauli_string(pauli_string, active_spots):
     n = len(pauli_string)
     
     adjusted_pauli_string = ""
     for i in range(n):
         letter = pauli_string[i]
         adjusted_pauli_string += letter if active_spots[i] else "I"
-        
     
-    b = list(format(int(readout_string[2:]), '#05b')[2:]) # e.g. "0x6" -> ["1", "1", "0"]
-    b = b[::-1] # ["1", "1", "0"] -> ["0", "1", "1"]
-    v = np.array([1-int(val)*2 for val in b]) #  ["0", "1", "1"] ->  [1, -1, -1]
+    return adjusted_pauli_string
+
+def calc_parity(readout_values, active_spots):
+    v = np.array([1-val*2 for val in readout_values]) #  ["0", "1", "1"] ->  [1, -1, -1]
     active = v*np.array(active_spots) # [1, -1, -1] * [1, 1, 0] -> [1, -1, 0]
     p = np.prod(active[active!=0]) # [1,-1] -> (1)*(-1) = -1
-    y = int((1-p)/2) #map: 1,-1 -> 0,1
-    return adjusted_pauli_string, y
+    return p
+    
+
+def calc_parity_full(pauli_string, readout_string, active_spots):
+    """
+    Args:
+        b (str): e.g. '0x6'
+        active_spots (List[int]): e.g. (1, 1, 0)
+    """
+    adjusted_pauli_string = calc_adjusted_pauli_string(pauli_string, active_spots)
+    readout_values = [int(x) for x in list(format(int(readout_string[2:]), '#05b')[2:])] # e.g. "0x6" -> ["1", "1", "0"] -> [1,1,0]
+    readout_values = readout_values[::-1] # [1,1,0] -> [0,1,1]
+    p = calc_parity(readout_values, active_spots) 
+    parity = int((1-p)/2) #map: 1,-1 -> 0,1
+    return adjusted_pauli_string, parity
 
 def run_analysis(results):
     results = copy.deepcopy(results)
@@ -356,25 +370,23 @@ def run_analysis(results):
     num_qubits = 3
     parsed_data = {} # key: e.g. "XYZ", "XYI", .. | val: for each parity measurement (e.g. <XYI>) we store [counts of 1, counts of -1], e.g. [12345, 950] 
     for num_trott_steps, result in results["data"].items():
-        # data_map = {}
+        data_map = {}
         reps = len(result["raw_data"])
         for i in range(3**num_qubits):  # loop over pauli strings (i.e. different tomography circuits)
             counts = {} # for each pauli string, we store total counts added together from each rep, e.g. {'0x6': 4014, '0x2': 4178}
             pauli_string = extract_key(result["raw_data"][0].results[i].header.name)
             for r in range(reps): # loop over reps
                 counts = add_dicts(counts, result["raw_data"][r].results[i].data.counts) # adding counts together
-            # data_map[pauli_string] = counts
+            data_map[pauli_string] = counts
             
             for active_spots in ACTIVE_LIST: # Loops through all possible parity measurements, e.g. [ZXY, ZXI, ZIY, IXY, ZII, IXI, IIY]
                 for readout_string, count in counts.items(): # loops through all readout values, e.g. '0x6', '0x2'
-                    adjusted_pauli_string, parity_meas = calc_parity(pauli_string, readout_string, active_spots) # ("ZXY", "0x6", (1,1,0)) -> "ZXI", 1 corresponds to <ZXI> = -1 measurement
-                    # if adjusted_pauli_string == "IIZ":
-                    #     print(pauli_string, readout_string, active_spots, adjusted_pauli_string, parity_meas, count)
+                    adjusted_pauli_string, parity_meas = calc_parity_full(pauli_string, readout_string, active_spots) # ("ZXY", "0x6", (1,1,0)) -> "ZXI", 1 corresponds to <ZXI> = -1 measurement
                     if adjusted_pauli_string not in parsed_data:
                         parsed_data[adjusted_pauli_string] = [0,0] # [counts of 1, counts of -1]
                     parsed_data[adjusted_pauli_string][parity_meas] += count
 
-        # result["data_map"] = data_map
+        result["data_map"] = data_map
         result["parsed_data"] = parsed_data
         
         parity = {} # key: e.g. "XYZ", "XYI", .. | val: for each parity measurement we store the expectation value (e.g. <XYI>)
@@ -405,6 +417,42 @@ def run_analysis(results):
     return results
 
 
+def parity2prob(parity_results, shots=1000, num_qubits=3, return_probs=False):
+    paulis = ["X", "Y", "Z"]
+    pauli_combos = list(itertools.product(*tuple([paulis for _ in range(num_qubits)])))
+    pauli_combos = ["".join(x) for x in pauli_combos]
+    
+    make_bin = lambda j: np.array([int(x) for x in list(format(j, f'#0{num_qubits+2}b')[2:])])
+    make_int = lambda b: [str(x) for x in b]
+    readout_results = np.array([make_bin(j) for j in range(7,-1,-1)])
+    active_spots = readout_results[:-1].copy()
+    
+    M_pexp_prob = np.zeros((2**num_qubits,2**num_qubits))
+    
+    for col, r in enumerate(readout_results):
+        for row, a in enumerate(active_spots):
+            parity = calc_parity(r,a)
+            M_pexp_prob[row,col] = parity
+    M_pexp_prob[-1,:] = np.ones_like(M_pexp_prob[-1,:]) # probability normalization
+    M_prob_pexp = np.linalg.inv(M_pexp_prob)
+    
+    
+    make_prob_label = lambda bs: "0x"+str(int("".join([str(b) for b in bs]),2))
+    prob_results = {}
+    for p in pauli_combos:
+        # p_exp_labels: e.g. ['XYZ', 'XYI', 'XIZ', 'XII', 'IYZ', 'IYI', 'IIZ']
+        p_exp_labels = [calc_adjusted_pauli_string(p,s) for s in active_spots]
+        p_exp_vals = [parity_results[l] for l in p_exp_labels]
+        p_exp_vals.append(1.0)
+        p_exp_vals = np.array(p_exp_vals)
+        probs = M_prob_pexp @ p_exp_vals
+        
+        if not return_probs:
+            probs = [int(shots*x) for x in probs]
+        
+        # reverse order of readout to follow Qiskit convention: [1,1,0] -> [0,1,1]
+        prob_results[p] = {make_prob_label(readout_results[i][::-1]):p_val for i, p_val in enumerate(probs)}
+    return prob_results
 
 # Plotting
 # ================================================================
