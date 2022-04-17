@@ -326,27 +326,34 @@ def add_dicts(a,b):
         c[key] = a.get(key,0) + b.get(key, 0)
     return c
 
-def calc_parity(pauli_string, readout_string, active_spots):
-    """
-    Args:
-        b (str): e.g. '0x6'
-        active_spots (List[int]): e.g. (1, 1, 0)
-    """
+def calc_adjusted_pauli_string(pauli_string, active_spots):
     n = len(pauli_string)
     
     adjusted_pauli_string = ""
     for i in range(n):
         letter = pauli_string[i]
         adjusted_pauli_string += letter if active_spots[i] else "I"
-        
     
-    b = list(format(int(readout_string[2:]), '#05b')[2:]) # e.g. "0x6" -> ["1", "1", "0"]
-    b = b[::-1] # ["1", "1", "0"] -> ["0", "1", "1"]
-    v = np.array([1-int(val)*2 for val in b]) #  ["0", "1", "1"] ->  [1, -1, -1]
+    return adjusted_pauli_string
+
+def calc_parity(readout_values, active_spots):
+    v = np.array([1-val*2 for val in readout_values]) #  ["0", "1", "1"] ->  [1, -1, -1]
     active = v*np.array(active_spots) # [1, -1, -1] * [1, 1, 0] -> [1, -1, 0]
     p = np.prod(active[active!=0]) # [1,-1] -> (1)*(-1) = -1
-    y = int((1-p)/2) #map: 1,-1 -> 0,1
-    return adjusted_pauli_string, y
+    return p
+
+def calc_parity_full(pauli_string, readout_string, active_spots):
+    """
+    Args:
+        b (str): e.g. '0x6'
+        active_spots (List[int]): e.g. (1, 1, 0)
+    """
+    adjusted_pauli_string = calc_adjusted_pauli_string(pauli_string, active_spots)
+    readout_values = [int(x) for x in list(format(int(readout_string[2:]), '#05b')[2:])] # e.g. "0x6" -> ["1", "1", "0"] -> [1,1,0]
+    readout_values = readout_values[::-1] # [1,1,0] -> [0,1,1]
+    p = calc_parity(readout_values, active_spots) 
+    parity = int((1-p)/2) #map: 1,-1 -> 0,1
+    return adjusted_pauli_string, parity
 
 def run_analysis(results):
     results = copy.deepcopy(results)
