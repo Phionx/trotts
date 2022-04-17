@@ -88,25 +88,62 @@ def gen_trott_gate():
 
 def gen_3cnot_trott_gate():
     t = Parameter('t') # parameterize variable t
+
+    # First CNOT 
+    CX1_qr = QuantumRegister(2)
+    CX1_qc = QuantumCircuit(CX1_qr, name='CX1')
+    
+    CX1_qc.cnot(0, 1)
+    CX1_qc.rx(2*t - np.pi/2, 0)
+    CX1_qc.h(0)
+    CX1_qc.rz(2*t, 1)
+    
+    CX1 = CX1_qc.to_instruction()
+    
+    # Second CNOT
+    CX2_qr = QuantumRegister(2)
+    CX2_qc = QuantumCircuit(CX2_qr, name='CX2')
+    
+    CX2_qc.cnot(0, 1)
+    CX2_qc.h(0)
+    CX2_qc.rz(-2*t, 1)
+    
+    CX2 = CX2_qc.to_instruction()
+    
+    # Third CNOT
+    CX3_qr = QuantumRegister(2)
+    CX3_qc = QuantumCircuit(CX3_qr, name='CX3')
+    
+    CX3_qc.cnot(0, 1)
+    CX3_qc.rx(np.pi/2, 0)
+    CX3_qc.rx(-np.pi/2, 1)
+    
+    CX3 = CX3_qc.to_instruction()
+    
     
     num_qubits = 3
-
     Trott_qr = QuantumRegister(num_qubits)
     Trott_qc = QuantumCircuit(Trott_qr, name='Trot')
 
+    
     for i in range(0, num_qubits - 1):
-        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-        Trott_qc.rx(2*t - np.pi/2, Trott_qr[i])
-        Trott_qc.h(Trott_qr[i])
-        Trott_qc.rz(2*t, Trott_qr[i+1])
+        Trott_qc.append(CX1, [Trott_qr[i], Trott_qr[i+1]])
+        Trott_qc.append(CX2, [Trott_qr[i], Trott_qr[i+1]])
+        Trott_qc.append(CX3, [Trott_qr[i], Trott_qr[i+1]])
+    
+#     for i in range(0, num_qubits - 1):
+#         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+#         Trott_qc.rx(2*t - np.pi/2, Trott_qr[i])
+#         Trott_qc.h(Trott_qr[i])
+#         Trott_qc.rz(2*t, Trott_qr[i+1])
         
-        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-        Trott_qc.h(Trott_qr[i])
-        Trott_qc.rz(-2*t, Trott_qr[i+1])
+#         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+#         Trott_qc.h(Trott_qr[i])
+#         Trott_qc.rz(-2*t, Trott_qr[i+1])
         
-        Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-        Trott_qc.rx(np.pi/2, Trott_qr[i])
-        Trott_qc.rx(-np.pi/2, Trott_qr[i+1])
+#         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
+#         Trott_qc.rx(np.pi/2, Trott_qr[i])
+#         Trott_qc.rx(-np.pi/2, Trott_qr[i+1])
 
     # Convert custom quantum circuit into a gate
     Trott_gate = Trott_qc.to_instruction()
