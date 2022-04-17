@@ -113,7 +113,8 @@ def gen_3cnot_trott_gate():
     return Trott_gate
 
 
-def gen_st_qcs(trott_gate: Instruction, trotter_steps: int):
+
+def gen_st_qcs(trott_gate: Instruction, trotter_steps: int, decompose: bool = False):
     """
     Args:
         n (int): number of trotter steps
@@ -128,19 +129,31 @@ def gen_st_qcs(trott_gate: Instruction, trotter_steps: int):
     
     qc.x([3,5]) # prepare init state |q5q3q1> = |110>
     
-    for _ in range(trotter_steps):
-        qc.append(trott_gate, [qr[1], qr[3], qr[5]])
+    if decompose:
+        # Create dummy circuit
+        qc_dummy = QuantumCircuit(qr)
+
+        for _ in range(trotter_steps):
+            qc_dummy.append(trott_gate, [qr[1], qr[3], qr[5]])
+
+        # Decompose dummy circuit into native gates and append to qc
+        qc = qc + qc_dummy.decompose().decompose()
+    else:
+        for _ in range(trotter_steps):
+            qc.append(trott_gate, [qr[1], qr[3], qr[5]])
     
+    # Bind timestep parameter
     qc = qc.bind_parameters({t: target_time/trotter_steps})
     
+    # Generate tomography circuits
     st_qcs = state_tomography_circuits(qc, [qr[1], qr[3], qr[5]])
     
     return st_qcs
 
-def gen_st_qcs_range(trott_gate: Instruction, trott_steps_range: List[int]):
+def gen_st_qcs_range(trott_gate: Instruction, trott_steps_range: List[int], decompose: bool = False):
     qcs = {}
     for trott_steps_val in trott_steps_range:
-        qcs[trott_steps_val] = gen_st_qcs(trott_gate, trott_steps_val)
+        qcs[trott_steps_val] = gen_st_qcs(trott_gate, trott_steps_val, decompose=decompose)
     return qcs
 
 def gen_target():
