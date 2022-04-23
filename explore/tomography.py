@@ -29,8 +29,9 @@ from qiskit import QuantumCircuit
 from qiskit.result import Result
 from qiskit.ignis.verification.tomography.basis import TomographyBasis, default_basis
 from qiskit.ignis.verification.tomography import marginal_counts, count_keys, combine_counts
-from qiskit.ignis.verification.tomography.fitters.lstsq_fit import lstsq_fit
+from qiskit.ignis.verification.tomography.fitters.lstsq_fit import lstsq_fit, make_positive_semidefinite
 from qiskit.ignis.verification.tomography.fitters.cvx_fit import cvx_fit, _HAS_CVX
+from qiskit.quantum_info import Pauli
 
 # Create logger
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ class CustomTomographyFitter:
     def process_input_data(self, input_data: Dict):
         """
         Input Data Formatting. We expect the input data dictionary to be of the following form: 
-        input_data = {"XYZ": counts_dict, ...} where counts_dict = {000: c1, 001: c2, ...}. We
+        input_data = {"XYZ": counts_dict, ...} where counts_dict = {'000': c1, '001': c2, ...}. We
         then process the keys of this dictionary into the form Qiskit expects: ('X', 'Y', 'Z').
 
         If keys are already tuples, then this returns back input_data.
@@ -218,22 +219,68 @@ class CustomTomographyFitter:
             else:
                 method = 'lstsq'
         if method == 'lstsq':
-            return lstsq_fit(data, basis_matrix,
+            rho_fit = lstsq_fit(data, basis_matrix,
                              weights=weights,
                              psd=psd,
                              trace=trace,
                              **kwargs)
 
-        if method == 'cvx':
-            return cvx_fit(data, basis_matrix,
+        elif method == 'cvx':
+            rho_fit = cvx_fit(data, basis_matrix,
                            weights=weights,
                            psd=psd,
                            trace=trace,
                            trace_preserving=trace_preserving,
                            **kwargs)
 
-        raise QiskitError('Unrecognized fit method {}'.format(method))
+        else:
+            raise QiskitError('Unrecognized fit method {}'.format(method))
 
+        # Enforce PSD constraint on ρ in case fitter fails to, then normalize!
+        if psd:   # This shouldn't do anything if fitter satisfies constraints
+            rho_fit = make_positive_semidefinite(rho_fit)
+        rho_fit *= 1 / np.trace(rho_fit) 
+
+        return rho_fit
+
+    def fit_pauli_exp_vals(self, 
+                           parity_data: Dict, 
+                           psd: bool = True, 
+                           trace: Optional[int] = None,
+                           **kwargs) -> np.ndarray:
+        """
+        Method for reconstructing a quantum density matrix by performing convex (least squares) 
+        optimization on Pauli expectation values ("parities"). Takes in a dictionary of the form
+        {pauli_string: val, ...} where pauli_string is one of 4ᴺ - 1 Paulis, and val ∈ [-1, 1]. 
+        
+        For N = 3, pauli_string ∈ {"ZZZ", "ZZI", ..., "XXX"}. We construct a basis matrix A as
+        follows: M = [vec(ZZZ), vec(ZZI), ..., vec(XXX)].H, where vec denotes the vectorization
+        (Choi-Jamiolkowski) map since Tr(A.H B) = ⟨⟨A|B⟩⟩ for two operators A, B. 
+        
+        We then solve the least squares minimization of ||Mx - b||₂ where x = vec(ρ) and b is a 
+        vector of the parity data in the same order as the basis matrix M. 
+        """
+    
+        basis_matrix = []
+        data = []
+
+        for pauli, val in parity_data.items():
+            ### Parity "XYZ" > actual order "ZYX" > vectorize to get |ZYX⟩⟩ > conjugate ket to its dual
+            row = Pauli(pauli[::-1]).to_matrix().flatten(order='F').conjugate()
+            basis_matrix.append(row)
+            data.append(val)
+        basis_matrix = np.array(basis_matrix)
+
+        # Only CVX fitter works here, not lstsq. Also requires additional PSD enforcement.  
+        rho_fit = cvx_fit(data=data, basis_matrix=basis_matrix, trace=trace, psd=psd, **kwargs)
+
+        # Enforce PSD constraint on ρ in case fitter fails to, then normalize!
+        if psd:   
+            rho_fit = make_positive_semidefinite(rho_fit)
+        rho_fit *= 1 / np.trace(rho_fit) 
+
+        return rho_fit    
+    
     @property
     def data(self):
         """

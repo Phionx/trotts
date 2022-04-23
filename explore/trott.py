@@ -30,6 +30,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import qutip as qt
 
+# Import Custom Tomography Tools
+from tomography import CustomTomographyFitter
+
 
 DEFAULT_SHOTS = 8192
 DEFAULT_REPS = 8
@@ -135,20 +138,6 @@ def gen_3cnot_trott_gate():
         Trott_qc.append(CX1, [Trott_qr[i], Trott_qr[i + 1]])
         Trott_qc.append(CX2, [Trott_qr[i], Trott_qr[i + 1]])
         Trott_qc.append(CX3, [Trott_qr[i], Trott_qr[i + 1]])
-
-    #     for i in range(0, num_qubits - 1):
-    #         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-    #         Trott_qc.rx(2*t - np.pi/2, Trott_qr[i])
-    #         Trott_qc.h(Trott_qr[i])
-    #         Trott_qc.rz(2*t, Trott_qr[i+1])
-
-    #         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-    #         Trott_qc.h(Trott_qr[i])
-    #         Trott_qc.rz(-2*t, Trott_qr[i+1])
-
-    #         Trott_qc.cnot(Trott_qr[i], Trott_qr[i+1])
-    #         Trott_qc.rx(np.pi/2, Trott_qr[i])
-    #         Trott_qc.rx(-np.pi/2, Trott_qr[i+1])
 
     # Convert custom quantum circuit into a gate
     Trott_gate = Trott_qc.to_instruction()
@@ -699,10 +688,20 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
 
 def fidelity_unitary_folding(results, deepcopy=True):
     results = copy.deepcopy(results) if deepcopy else results
+    target_state, _ = gen_target()
 
     for trott_step, res in results["analysis"].items():
         parity = res["uf_parity"]
-        res["uf_infid"] = 0.1  # TODO: Shoumik pls add code
+        prob_dist = parity2prob(parity)
+        ctf = CustomTomographyFitter(prob_dist)
+    
+        try:
+            rho_fit = ctf.fit(method='cvx', trace=1, psd=True)
+            fidelity = state_fidelity(rho_fit, target_state)
+        except:
+            print(f"An MLE error occured while fitting results for trott_step {trott_step}!")
+        res["uf_infid"] = fidelity
+        
     return results
 
 
@@ -720,7 +719,7 @@ def run_analysis(
     return results
 
 
-def parity2prob(parity_results, shots=1000, num_qubits=3, return_probs=False):
+def parity2prob(parity_results, shots=10000, num_qubits=3, return_probs=False):
     paulis = ["X", "Y", "Z"]
     pauli_combos = list(itertools.product(*tuple([paulis for _ in range(num_qubits)])))
     pauli_combos = ["".join(x) for x in pauli_combos]
