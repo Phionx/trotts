@@ -3,9 +3,11 @@ Trott Functions
 """
 
 # suppress warnings
-from typing import List
-import copy
+from typing import List, Optional
+from numbers import Number
 from datetime import datetime
+import copy
+
 import itertools
 import warnings
 
@@ -22,6 +24,7 @@ from qiskit.ignis.verification.tomography import (
     StateTomographyFitter,
 )
 from qiskit.quantum_info import state_fidelity
+from scipy.optimize import curve_fit
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
@@ -152,11 +155,18 @@ def gen_3cnot_trott_gate():
     return Trott_gate
 
 
-def gen_st_qcs(trott_gate: Instruction, trotter_steps: int, decompose: bool = False):
+def gen_st_qcs(
+    trott_gate: Instruction,
+    trott_steps: int,
+    unitary_folding_steps: int = 0,
+    decompose: bool = False,
+):
     """
     Args:
         n (int): number of trotter steps
     """
+
+    trott_gate_inv = trott_gate.inverse()
 
     t = trott_gate.params[0]  # assuming only t param
 
@@ -171,17 +181,24 @@ def gen_st_qcs(trott_gate: Instruction, trotter_steps: int, decompose: bool = Fa
         # Create dummy circuit
         qc_dummy = QuantumCircuit(qr)
 
-        for _ in range(trotter_steps):
+        for _ in range(trott_steps):
             qc_dummy.append(trott_gate, [qr[1], qr[3], qr[5]])
+
+        for _ in range(unitary_folding_steps):
+            qc_dummy.append(trott_gate, [qr[1], qr[3], qr[5]])
+            qc_dummy.append(trott_gate_inv, [qr[1], qr[3], qr[5]])
 
         # Decompose dummy circuit into native gates and append to qc
         qc = qc + qc_dummy.decompose().decompose()
     else:
-        for _ in range(trotter_steps):
+        for _ in range(trott_steps):
             qc.append(trott_gate, [qr[1], qr[3], qr[5]])
+        for _ in range(unitary_folding_steps):
+            qc.append(trott_gate, [qr[1], qr[3], qr[5]])
+            qc.append(trott_gate_inv, [qr[1], qr[3], qr[5]])
 
     # Bind timestep parameter
-    qc = qc.bind_parameters({t: target_time / trotter_steps})
+    qc = qc.bind_parameters({t: target_time / trott_steps})
 
     # Generate tomography circuits
     st_qcs = state_tomography_circuits(qc, [qr[1], qr[3], qr[5]])
@@ -190,13 +207,23 @@ def gen_st_qcs(trott_gate: Instruction, trotter_steps: int, decompose: bool = Fa
 
 
 def gen_st_qcs_range(
-    trott_gate: Instruction, trott_steps_range: List[int], decompose: bool = False
+    trott_gate: Instruction,
+    trott_steps_range: List[int],
+    unitary_folding_steps_range: Optional[List[int]] = None,
+    decompose: bool = False,
 ):
     qcs = {}
+    unitary_folding_steps_range = (
+        unitary_folding_steps_range if unitary_folding_steps_range is not None else [0]
+    )
     for trott_steps_val in trott_steps_range:
-        qcs[trott_steps_val] = gen_st_qcs(
-            trott_gate, trott_steps_val, decompose=decompose
-        )
+        for unitary_folding_steps_val in unitary_folding_steps_range:
+            qcs[(trott_steps_val, unitary_folding_steps_val)] = gen_st_qcs(
+                trott_gate,
+                trott_steps_val,
+                unitary_folding_steps=unitary_folding_steps_val,
+                decompose=decompose,
+            )
     return qcs
 
 
@@ -250,14 +277,18 @@ def state_tomo(result, st_qcs):
 # ================================================================
 
 
-def gen_jobs_single(st_qcs, backend=None, shots=8192, reps=DEFAULT_REPS):
+def gen_jobs_single(
+    st_qcs, backend=None, shots=8192, reps=DEFAULT_REPS, optimization_level=0
+):
     backend = QasmSimulator() if backend is None else backend
 
     # create jobs
     jobs = []
     for _ in range(reps):
         # execute
-        job = execute(st_qcs, backend, shots=shots)
+        job = execute(
+            st_qcs, backend, shots=shots, optimization_level=optimization_level
+        )
         print("Job ID", job.job_id())
         jobs.append(job)
     return jobs
@@ -285,8 +316,16 @@ def extract_results_single(jobs, st_qcs):
     return rhos, raw_results
 
 
-def gen_result_single(st_qcs, backend=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS):
-    jobs = gen_jobs_single(st_qcs, backend=backend, shots=shots, reps=reps)
+def gen_result_single(
+    st_qcs, backend=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS, optimization_level=0
+):
+    jobs = gen_jobs_single(
+        st_qcs,
+        backend=backend,
+        shots=shots,
+        reps=reps,
+        optimization_level=optimization_level,
+    )
     gen_job_monitors_single(jobs)
     return extract_results_single(jobs, st_qcs)
 
@@ -319,18 +358,18 @@ def gen_results(
         else {"properties": {"backend": backend}, "data": {}}
     )
 
-    for num_trott_steps, st_qcs in tqdm(qcs.items()):
+    for sweep_param, st_qcs in tqdm(qcs.items()):
         print("=" * 20)
-        if num_trott_steps in results["data"]:
-            print(f"Result already stored for trott_steps = {num_trott_steps}")
+        if sweep_param in results["data"]:
+            print(f"Result already stored for trott_steps = {sweep_param}")
             continue
 
-        print(f"Running with trott_steps = {num_trott_steps}")
+        print(f"Running with trott_steps = {sweep_param}")
 
-        results["data"][num_trott_steps] = {}
+        results["data"][sweep_param] = {}
         (
-            results["data"][num_trott_steps]["rhos"],
-            results["data"][num_trott_steps]["raw_data"],
+            results["data"][sweep_param]["rhos"],
+            results["data"][sweep_param]["raw_data"],
         ) = gen_result_single(st_qcs, backend=backend, shots=shots, reps=reps)
 
         np.save(filename, results)
@@ -345,6 +384,7 @@ def gen_qpu_jobs(
     filename=None,
     shots=DEFAULT_SHOTS,
     reps=DEFAULT_REPS,
+    optimization_level=0,
 ):
     """
     This function submits jobs.
@@ -366,7 +406,13 @@ def gen_qpu_jobs(
             continue
 
         print(f"Submitting jobs with trott_steps = {num_trott_steps}")
-        jobs_list = gen_jobs_single(st_qcs, backend=backend, shots=shots, reps=reps)
+        jobs_list = gen_jobs_single(
+            st_qcs,
+            backend=backend,
+            shots=shots,
+            reps=reps,
+            optimization_level=optimization_level,
+        )
         job_ids[num_trott_steps] = [job.job_id() for job in jobs_list]
         np.save(filename, job_ids)
 
@@ -605,13 +651,72 @@ def run_metric_analysis_sweep(results, deepcopy=True):
     return results
 
 
-def run_analysis(results, deepcopy=True, num_qubits=3):
+def fit_uf(steps, metric, plotting=False):
+    # y = Ae^(bx) , -1 <= A <= 1, b < 0
+    def fexp(x, a, b):
+        return a * np.exp(b * x)
+
+    if plotting:
+        fig, ax = plt.subplots(1, figsize=(8, 3), dpi=200,)
+        ax.plot(steps, metric, "*", label="data")
+        ax.set_ylabel("<Pauli String>")
+        ax.set_xlabel("$\lambda$")
+
+    popt, _ = curve_fit(
+        fexp, steps, metric, p0=[0, -0.1], bounds=([-1, -np.inf], [1, 0])
+    )
+
+    if plotting:
+        esteps = np.concatenate((np.array([0.1 * i for i in range(10)]), steps))
+        metric_fit = fexp(esteps, *popt)
+        ax.plot(esteps, metric_fit, ".--", label="fit")
+        fig.tight_layout()
+    return popt[0]
+
+
+def fit_unitary_folding(results, deepcopy=True, plotting=False):
+    results = copy.deepcopy(results) if deepcopy else results
+
+    num_trott_steps = sorted(list(set([x[0] for x in results["data"].keys()])))
+    pauli_strings = list(
+        results["data"][list(results["data"].keys())[0]]["parity"].keys()
+    )
+    results["analysis"] = {}
+    for trott_step in num_trott_steps:
+        results["analysis"][trott_step] = {}
+
+        parity = {}
+        for pauli_string in pauli_strings:
+            steps, metric = extract_metric(
+                results,
+                metric_func=lambda res: res["parity"][pauli_string],
+                sweep_param_parser=unitary_folding_parser_factory(n=trott_step),
+            )
+            parity[pauli_string] = fit_uf(steps, metric, plotting=plotting)
+        results["analysis"][trott_step]["uf_parity"] = parity
+    return results
+
+
+def fidelity_unitary_folding(results, deepcopy=True):
+    results = copy.deepcopy(results) if deepcopy else results
+
+    for trott_step, res in results["analysis"].items():
+        parity = res["uf_parity"]
+        res["uf_infid"] = 0.1  # TODO: Shoumik pls add code
+    return results
+
+
+def run_analysis(
+    results, deepcopy=True, num_qubits=3, plotting=False, unitary_folding=True
+):
     results = copy.deepcopy(results) if deepcopy else results
 
     gen_data_map_sweep(results, deepcopy=False, num_qubits=num_qubits)
     gen_parity_sweep(results, deepcopy=False)
     run_metric_analysis_sweep(results, deepcopy=False)
-
+    if unitary_folding:
+        fit_unitary_folding(results, deepcopy=False, plotting=plotting)
+        fidelity_unitary_folding(results, deepcopy=False)
     return results
 
 
@@ -636,8 +741,10 @@ def parity2prob(parity_results, shots=1000, num_qubits=3, return_probs=False):
     M_pexp_prob[-1, :] = np.ones_like(M_pexp_prob[-1, :])  # probability normalization
     M_prob_pexp = np.linalg.inv(M_pexp_prob)
 
-    make_prob_label = lambda bs: "0x" + str(int("".join([str(b) for b in bs]), 2))
+    # make_prob_label = lambda bs: "0x" + str(int("".join([str(b) for b in bs]), 2))
+    make_prob_label = lambda bs: "".join([str(x) for x in bs])
     prob_results = {}
+    count_results = {}
     for p in pauli_combos:
         # p_exp_labels: e.g. ['XYZ', 'XYI', 'XIZ', 'XII', 'IYZ', 'IYI', 'IIZ']
         p_exp_labels = [calc_adjusted_pauli_string(p, s) for s in active_spots]
@@ -646,19 +753,69 @@ def parity2prob(parity_results, shots=1000, num_qubits=3, return_probs=False):
         p_exp_vals = np.array(p_exp_vals)
         probs = M_prob_pexp @ p_exp_vals
 
-        if not return_probs:
-            probs = [int(shots * x) for x in probs]
-
         # reverse order of readout to follow Qiskit convention: [1,1,0] -> [0,1,1]
         prob_results[p] = {
             make_prob_label(readout_results[i][::-1]): p_val
             for i, p_val in enumerate(probs)
         }
-    return prob_results
+
+        count_results[p] = {
+            key: int(shots * p) for key, p in prob_results[p].items() if p >= 0
+        }
+
+    if return_probs:
+        return prob_results
+        
+    return count_results
 
 
 # Plotting
 # ================================================================
+
+
+def unitary_folding_parser_factory(n=4):
+    # lambda n = n + 2*beta
+    # lambda = 1 + 2*beta/n
+    def unitary_folding_parser(sweep_param):
+        step = 1 + 2 * sweep_param[1] / n
+        skip = sweep_param[0] != n
+        return step, skip
+
+    return unitary_folding_parser
+
+
+def default_parser(sweep_param):
+    if isinstance(sweep_param, Number):
+        return sweep_param, False
+
+    beta = 0
+    step = sweep_param[0]
+    skip = sweep_param[1] != beta
+    return step, skip
+
+
+def extract_metric(results, metric_func=None, sweep_param_parser=None, data_key="data"):
+    metric_func = (
+        metric_func if metric_func is not None else lambda res: res["avg_infid"]
+    )
+
+    sweep_param_parser = (
+        sweep_param_parser if sweep_param_parser is not None else default_parser
+    )
+
+    steps = []
+    metric = []
+    for sweep_param, result in results[data_key].items():
+        step, skip = sweep_param_parser(sweep_param)
+        if skip:
+            continue
+
+        steps.append(step)
+        metric.append(metric_func(result))
+
+    steps = np.array(steps)
+    metric = np.array(metric)
+    return steps, metric
 
 
 def plot_metric(
@@ -668,21 +825,23 @@ def plot_metric(
     plot_log=True,
     axs=None,
     legend_label=None,
+    x_label="# of Trotterization Steps",
     fontsize=10,
     ncol=1,
     legend_fontsize=6,
+    sweep_param_parser=None,
+    data_key="data",
 ):
     metric_func = (
         metric_func if metric_func is not None else lambda res: res["avg_infid"]
     )
-    steps = []
-    metric = []
-    for num_trott_steps, result in results["data"].items():
-        steps.append(num_trott_steps)
-        metric.append(metric_func(result))
 
-    steps = np.array(steps)
-    metric = np.array(metric)
+    steps, metric = extract_metric(
+        results,
+        metric_func=metric_func,
+        sweep_param_parser=sweep_param_parser,
+        data_key=data_key,
+    )
 
     if axs is None:
         fig, axs = plt.subplots(
@@ -695,14 +854,14 @@ def plot_metric(
 
     ax = axs[0][0]
     ax.plot(1 / steps, metric, label=legend_label)
-    ax.set_xlabel("1/(# of Trotterization Steps)", fontsize=fontsize)
+    ax.set_xlabel(f"1/({x_label})", fontsize=fontsize)
     ax.set_ylabel(plot_label, fontsize=fontsize)
     if legend_label is not None:
         ax.legend(fontsize=legend_fontsize, ncol=ncol)
 
     ax = axs[0][1]
     ax.plot(steps, metric, label=legend_label)
-    ax.set_xlabel("(# of Trotterization Steps)", fontsize=fontsize)
+    ax.set_xlabel(f"({x_label})", fontsize=fontsize)
     ax.set_ylabel(plot_label, fontsize=fontsize)
     if legend_label is not None:
         ax.legend(fontsize=legend_fontsize, ncol=ncol)
@@ -710,47 +869,55 @@ def plot_metric(
     if plot_log:
         ax = axs[1][0]
         ax.plot(1 / steps, np.log(metric), label=legend_label)
-        ax.set_xlabel("1/(# of Trotterization Steps)", fontsize=fontsize)
+        ax.set_xlabel(f"1/({x_label})", fontsize=fontsize)
         ax.set_ylabel(f"log({plot_label})", fontsize=fontsize)
         if legend_label is not None:
             ax.legend(fontsize=legend_fontsize, ncol=ncol)
 
         ax = axs[1][1]
         ax.plot(steps, np.log(metric), label=legend_label)
-        ax.set_xlabel("(# of Trotterization Steps)", fontsize=fontsize)
+        ax.set_xlabel(f"({x_label})", fontsize=fontsize)
         ax.set_ylabel(f"log({plot_label})", fontsize=fontsize)
         if legend_label is not None:
             ax.legend(fontsize=legend_fontsize, ncol=ncol)
 
     fig = plt.gcf()
-    fig.suptitle(f"{plot_label} vs. Trotterization Step #", fontsize=fontsize)
+    fig.suptitle(f"{plot_label} vs. {x_label}", fontsize=fontsize)
 
     fig.tight_layout()
 
     return axs
 
 
-def plot_fidelities(results):
+def plot_fidelities(results, key="avg_infid", data_key="data", **kwargs):
     return plot_metric(
-        results, metric_func=lambda res: res["avg_infid"], plot_label="Infidelity"
+        results,
+        metric_func=lambda res: res[key],
+        plot_label="Infidelity",
+        data_key=data_key,
+        **kwargs,
     )
 
 
-def plot_element_dist(results, row=6, col=6):
+def plot_element_dist(results, row=6, col=6, **kwargs):
     return plot_metric(
         results,
         metric_func=lambda res: res["avg_element_dist"][row][col],
         plot_label=f"Element Dist. ({row}, {col})",
+        **kwargs,
     )
 
 
-def plot_l1_dist(results):
+def plot_l1_dist(results, **kwargs):
     return plot_metric(
-        results, metric_func=lambda res: res["avg_l1_dist"], plot_label=f"L1 Dist."
+        results,
+        metric_func=lambda res: res["avg_l1_dist"],
+        plot_label=f"L1 Dist.",
+        **kwargs,
     )
 
 
-def plot_parity(results, parity_strings=None, legend=False):
+def plot_parity(results, parity_strings=None, legend=False, **kwargs):
     parity_strings = (
         list(list(results["data"].values())[0]["parity"].keys())
         if parity_strings is None
@@ -770,6 +937,7 @@ def plot_parity(results, parity_strings=None, legend=False):
                 ncol=3,
                 legend_label=f"<{parity_string}>",
                 legend_fontsize=4,
+                **kwargs,
             )
         else:
             axs = plot_metric(
@@ -779,12 +947,51 @@ def plot_parity(results, parity_strings=None, legend=False):
                 plot_log=False,
                 axs=axs,
                 fontsize=6,
+                **kwargs,
             )
 
     return axs
 
 
-def plot_parity_dist(results, parity_strings=None, legend=False):
+def plot_uf_parity(results, parity_strings=None, legend=False, **kwargs):
+    parity_strings = (
+        list(list(results["analysis"].values())[0]["uf_parity"].keys())
+        if parity_strings is None
+        else parity_strings
+    )
+
+    axs = None
+    for parity_string in parity_strings:
+        if legend:
+            axs = plot_metric(
+                results,
+                metric_func=lambda res: res["uf_parity"][parity_string],
+                plot_label=f"Measured <Pauli String>",
+                plot_log=False,
+                axs=axs,
+                fontsize=6,
+                ncol=3,
+                legend_label=f"<{parity_string}>",
+                legend_fontsize=4,
+                data_key="analysis",
+                **kwargs,
+            )
+        else:
+            axs = plot_metric(
+                results,
+                metric_func=lambda res: res["uf_parity"][parity_string],
+                plot_label=f"Measured <Pauli String>",
+                plot_log=False,
+                axs=axs,
+                fontsize=6,
+                data_key="analysis",
+                **kwargs,
+            )
+
+    return axs
+
+
+def plot_parity_dist(results, parity_strings=None, legend=False, **kwargs):
     _, target_parity = gen_target()
 
     parity_strings = (
@@ -808,6 +1015,7 @@ def plot_parity_dist(results, parity_strings=None, legend=False):
                 ncol=3,
                 legend_label=f"<{parity_string}>",
                 legend_fontsize=4,
+                **kwargs,
             )
         else:
             axs = plot_metric(
@@ -819,6 +1027,7 @@ def plot_parity_dist(results, parity_strings=None, legend=False):
                 plot_log=False,
                 axs=axs,
                 fontsize=6,
+                **kwargs,
             )
 
     return axs
