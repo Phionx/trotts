@@ -267,7 +267,7 @@ def state_tomo(result, st_qcs):
 
 
 def gen_jobs_single(
-    st_qcs, backend=None, shots=8192, reps=DEFAULT_REPS, optimization_level=0
+    st_qcs, backend=None, shots=DEFAULT_SHOTS, reps=DEFAULT_REPS, optimization_level=0
 ):
     backend = QasmSimulator() if backend is None else backend
 
@@ -721,7 +721,7 @@ def run_analysis(
     return results
 
 
-def parity2prob(parity_results, shots=10000, num_qubits=3, return_probs=False):
+def parity2prob(parity_results, shots=DEFAULT_SHOTS, num_qubits=3, return_probs=False):
     paulis = ["X", "Y", "Z"]
     pauli_combos = list(itertools.product(*tuple([paulis for _ in range(num_qubits)])))
     pauli_combos = ["".join(x) for x in pauli_combos]
@@ -742,7 +742,6 @@ def parity2prob(parity_results, shots=10000, num_qubits=3, return_probs=False):
     M_pexp_prob[-1, :] = np.ones_like(M_pexp_prob[-1, :])  # probability normalization
     M_prob_pexp = np.linalg.inv(M_pexp_prob)
 
-    # make_prob_label = lambda bs: "0x" + str(int("".join([str(b) for b in bs]), 2))
     make_prob_label = lambda bs: "".join([str(x) for x in bs])
     prob_results = {}
     count_results = {}
