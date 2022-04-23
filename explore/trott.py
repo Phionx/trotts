@@ -323,17 +323,12 @@ def gen_result_single(
     return extract_results_single(jobs, st_qcs)
 
 
-def gen_meas_fitter(backend=None, hardware_backend=None):
+def gen_meas_fitter(backend=None, shots=DEFAULT_SHOTS):
     backend = QasmSimulator() if backend is None else backend
-    hardware_backend = QasmSimulator() if hardware_backend is None else hardware_backend
 
     # Generate the calibration circuits
     meas_calibs, state_labels = mc.complete_meas_cal(qubit_list=[1, 3, 5])
-    noise_model = NoiseModel.from_backend(hardware_backend)
-
-    job_cal = execute(
-        meas_calibs, backend=backend, shots=20000, noise_model=noise_model
-    )
+    job_cal = execute(meas_calibs, backend=backend, shots=shots)
     meas_fitter = mc.CompleteMeasFitter(job_cal.result(), state_labels)
     return meas_fitter
 
@@ -675,8 +670,8 @@ def fit_uf(steps, metric, plotting=False):
     def fexp(x, a, b):
         return a * np.exp(b * x)
 
-    steps = np.concatenate((steps, np.array([10])))
-    metric = np.concatenate((metric, np.array([0])))
+    # steps = np.concatenate((steps, np.array([10])))
+    # metric = np.concatenate((metric, np.array([0])))
 
     if plotting:
         fig, ax = plt.subplots(1, figsize=(8, 3), dpi=200,)
@@ -733,7 +728,8 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
             )
 
             p_fit, r2_val = fit_uf(steps, metric, plotting=plotting)
-            p_val = p_fit if r2_val > 0.95 else metric[np.argsort(steps)[0]]
+            p_val = p_fit if r2_val > 0.94 else metric[np.argsort(steps)[0]]
+            # parity[pauli_string] = p_val
             parity[pauli_string] = max(p_val, -1) if p_val <= 0 else min(p_val, 1)
         results["analysis"][trott_step]["uf_parity"] = parity
     return results
@@ -745,7 +741,6 @@ def fidelity_unitary_folding(results, deepcopy=True):
     print("Calculating Unitary Folding Extrapolated Fidelities:")
 
     target_state, _ = gen_target()
-
     for trott_step, res in tqdm(results["analysis"].items()):
         parity = res["uf_parity"]
         prob_dist = parity2prob(parity)
