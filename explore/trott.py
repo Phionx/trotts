@@ -28,9 +28,11 @@ from qiskit.ignis.verification.tomography import (
 from qiskit.quantum_info import state_fidelity
 from scipy.optimize import curve_fit
 from tqdm import tqdm
+from qiskit.providers.aer.noise import NoiseModel
 import numpy as np
 import matplotlib.pyplot as plt
 import qutip as qt
+import qiskit.ignis.mitigation.measurement as mc
 
 # Import Custom Tomography Tools
 from tomography import CustomTomographyFitter
@@ -321,6 +323,21 @@ def gen_result_single(
     return extract_results_single(jobs, st_qcs)
 
 
+def gen_meas_fitter(backend=None, hardware_backend=None):
+    backend = QasmSimulator() if backend is None else backend
+    hardware_backend = QasmSimulator() if hardware_backend is None else hardware_backend
+
+    # Generate the calibration circuits
+    meas_calibs, state_labels = mc.complete_meas_cal(qubit_list=[1, 3, 5])
+    noise_model = NoiseModel.from_backend(hardware_backend)
+
+    job_cal = execute(
+        meas_calibs, backend=backend, shots=20000, noise_model=noise_model
+    )
+    meas_fitter = mc.CompleteMeasFitter(job_cal.result(), state_labels)
+    return meas_fitter
+
+
 def gen_results(
     qcs,
     backend=None,
@@ -547,17 +564,17 @@ def calc_parity_full(pauli_string, readout_string, active_spots):
 def gen_data_map_single(result, deepcopy=True, num_qubits=3):
     result = copy.deepcopy(result) if deepcopy else result
     data_map = {}
-    reps = len(result["raw_data"])
+    reps = len(result["filtered_data"])
     for i in range(
         3 ** num_qubits
     ):  # loop over pauli strings (i.e. different tomography circuits)
         counts = (
             {}
         )  # for each pauli string, we store total counts added together from each rep, e.g. {'0x6': 4014, '0x2': 4178}
-        pauli_string = extract_key(result["raw_data"][0].results[i].header.name)
+        pauli_string = extract_key(result["filtered_data"][0].results[i].header.name)
         for r in range(reps):  # loop over reps
             counts = add_dicts(
-                counts, result["raw_data"][r].results[i].data.counts
+                counts, result["filtered_data"][r].results[i].data.counts
             )  # adding counts together
         data_map[pauli_string] = counts
     result["data_map"] = data_map
@@ -565,9 +582,10 @@ def gen_data_map_single(result, deepcopy=True, num_qubits=3):
 
 
 def gen_data_map_sweep(results, deepcopy=True, num_qubits=3):
+    print("Generating Data Maps:")
     results = copy.deepcopy(results) if deepcopy else results
 
-    for _, result in results["data"].items():  # sweep over some parameter
+    for _, result in tqdm(results["data"].items()):  # sweep over some parameter
         gen_data_map_single(result, deepcopy=False, num_qubits=num_qubits)
     return results
 
@@ -612,9 +630,10 @@ def gen_parity_single(result, deepcopy=True):
 
 
 def gen_parity_sweep(results, deepcopy=True):
+    print("Generating Parity Values:")
     results = copy.deepcopy(results) if deepcopy else results
 
-    for _, result in results["data"].items():
+    for _, result in tqdm(results["data"].items()):
         gen_parity_single(result, deepcopy=False)
 
     return results
@@ -644,8 +663,9 @@ def run_metric_analysis_single(result, deepcopy=True):
 
 def run_metric_analysis_sweep(results, deepcopy=True):
     results = copy.deepcopy(results) if deepcopy else results
+    print("Running Metric Analysis:")
 
-    for _, result in results["data"].items():
+    for _, result in tqdm(results["data"].items()):
         run_metric_analysis_single(result, deepcopy=False)
     return results
 
@@ -694,12 +714,14 @@ def fit_uf(steps, metric, plotting=False):
 def fit_unitary_folding(results, deepcopy=True, plotting=False):
     results = copy.deepcopy(results) if deepcopy else results
 
+    print("Running Unitary Folding Extrapolation:")
+
     num_trott_steps = sorted(list(set([x[0] for x in results["data"].keys()])))
     pauli_strings = list(
         results["data"][list(results["data"].keys())[0]]["parity"].keys()
     )
     results["analysis"] = {}
-    for trott_step in num_trott_steps:
+    for trott_step in tqdm(num_trott_steps):
         results["analysis"][trott_step] = {}
 
         parity = {}
@@ -719,9 +741,12 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
 
 def fidelity_unitary_folding(results, deepcopy=True):
     results = copy.deepcopy(results) if deepcopy else results
+
+    print("Calculating Unitary Folding Extrapolated Fidelities:")
+
     target_state, _ = gen_target()
 
-    for trott_step, res in results["analysis"].items():
+    for trott_step, res in tqdm(results["analysis"].items()):
         parity = res["uf_parity"]
         prob_dist = parity2prob(parity)
         ctf = CustomTomographyFitter(prob_dist)
@@ -741,11 +766,32 @@ def fidelity_unitary_folding(results, deepcopy=True):
     return results
 
 
+def run_meas_calibration(results, meas_fitter=None, deepcopy=True):
+    results = copy.deepcopy(results) if deepcopy else results
+    print("Running Measurement Calibration:")
+    for sweep_param, result in tqdm(results["data"].items()):
+        if meas_fitter is not None:
+            result["filtered_data"] = [
+                meas_fitter.filter.apply(r, method="least_squares")
+                for r in result["raw_data"]
+            ]
+        else:
+            result["filtered_data"] = result["raw_data"]
+
+    return results
+
+
 def run_analysis(
-    results, deepcopy=True, num_qubits=3, plotting=False, unitary_folding=True
+    results,
+    deepcopy=True,
+    num_qubits=3,
+    plotting=False,
+    unitary_folding=True,
+    meas_fitter=None,
 ):
     results = copy.deepcopy(results) if deepcopy else results
 
+    run_meas_calibration(results, meas_fitter=meas_fitter, deepcopy=False)
     gen_data_map_sweep(results, deepcopy=False, num_qubits=num_qubits)
     gen_parity_sweep(results, deepcopy=False)
     run_metric_analysis_sweep(results, deepcopy=False)
