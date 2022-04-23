@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 
 # Importing standard Qiskit modules
-from qiskit import QuantumCircuit, QuantumRegister, IBMQ, execute, transpile
+from qiskit import QiskitError, QuantumCircuit, QuantumRegister, IBMQ, execute, transpile
 from qiskit.providers.aer import QasmSimulator
 from qiskit.tools.monitor import job_monitor
 from qiskit.circuit import Parameter, Instruction
@@ -698,7 +698,7 @@ def fidelity_unitary_folding(results, deepcopy=True):
         try:
             rho_fit = ctf.fit(method='cvx', trace=1, psd=True)
             fidelity = state_fidelity(rho_fit, target_state)
-        except:
+        except QiskitError:
             print(f"An MLE error occured while fitting results for trott_step {trott_step}!")
         
         # Store infidelity, rather than fidelity
