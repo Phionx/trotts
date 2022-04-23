@@ -11,6 +11,8 @@ import copy
 import itertools
 import warnings
 
+from regex import P
+
 warnings.filterwarnings("ignore")
 
 
@@ -653,6 +655,9 @@ def fit_uf(steps, metric, plotting=False):
     def fexp(x, a, b):
         return a * np.exp(b * x)
 
+    steps = np.concatenate((steps, np.array([10])))
+    metric = np.concatenate((metric, np.array([0])))
+
     if plotting:
         fig, ax = plt.subplots(1, figsize=(8, 3), dpi=200,)
         ax.plot(steps, metric, "*", label="data")
@@ -660,8 +665,19 @@ def fit_uf(steps, metric, plotting=False):
         ax.set_xlabel("$\lambda$")
 
     popt, pcov = curve_fit(
-        fexp, steps, metric, p0=[0, -0.1], bounds=([-1, -np.inf], [1, 0])
+        fexp, steps, metric, p0=[0, -0.1], bounds=([-3, -np.inf], [1, 0])
     )
+
+    fitted_metric = fexp(steps, *popt)
+
+    # residual sum of squares
+    ss_res = np.sum((metric - fitted_metric) ** 2)
+
+    # total sum of squares
+    ss_tot = np.sum((metric - np.mean(metric)) ** 2)
+
+    # r-squared
+    r2 = 1 - (ss_res / ss_tot)
 
     perr = np.sqrt(np.diag(pcov))  # 1 std
 
@@ -670,7 +686,9 @@ def fit_uf(steps, metric, plotting=False):
         metric_fit = fexp(esteps, *popt)
         ax.plot(esteps, metric_fit, ".--", label="fit")
         fig.tight_layout()
-    return popt[0], perr[0]
+        # print(popt, perr)
+        print("r^2: ", r2)
+    return popt[0], r2
 
 
 def fit_unitary_folding(results, deepcopy=True, plotting=False):
@@ -692,11 +710,9 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
                 sweep_param_parser=unitary_folding_parser_factory(n=trott_step),
             )
 
-            p_val, p_std = fit_uf(steps, metric, plotting=plotting)
-            parity[pauli_string] = (
-                p_val if p_std < np.abs(p_val) else metric[np.argsort(steps)[0]]
-            )
-            # parity[pauli_string] = metric[np.argsort(steps)[0]]
+            p_fit, r2_val = fit_uf(steps, metric, plotting=plotting)
+            p_val = p_fit if r2_val > 0.95 else metric[np.argsort(steps)[0]]
+            parity[pauli_string] = max(p_val, -1) if p_val <= 0 else min(p_val, 1)
         results["analysis"][trott_step]["uf_parity"] = parity
     return results
 
@@ -717,6 +733,7 @@ def fidelity_unitary_folding(results, deepcopy=True):
             print(
                 f"An MLE error occured while fitting results for trott_step {trott_step}!"
             )
+            fidelity = 0  # TODO: remove later
 
         # Store infidelity, rather than fidelity
         res["uf_infid"] = 1 - fidelity
