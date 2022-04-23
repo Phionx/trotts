@@ -342,24 +342,32 @@ def gen_results(
 
     backend = QasmSimulator() if backend is None else backend
     results = (
-        results
+        copy.deepcopy(results)
         if results is not None
         else {"properties": {"backend": backend}, "data": {}}
     )
 
     for sweep_param, st_qcs in tqdm(qcs.items()):
         print("=" * 20)
+        already_run = 0
         if sweep_param in results["data"]:
-            print(f"Result already stored for trott_steps = {sweep_param}")
-            continue
+            already_run = len(results["data"][sweep_param]["raw_data"])
+            if already_run < reps:
+                print(f"Running {reps-already_run} more reps for {sweep_param}.")
+            else:
+                print(f"Result already stored for trott_steps = {sweep_param}")
+                continue
 
         print(f"Running with trott_steps = {sweep_param}")
 
-        results["data"][sweep_param] = {}
-        (
-            results["data"][sweep_param]["rhos"],
-            results["data"][sweep_param]["raw_data"],
-        ) = gen_result_single(st_qcs, backend=backend, shots=shots, reps=reps)
+        if already_run == 0:
+            results["data"][sweep_param] = {"rhos": [], "raw_data": []}
+
+        rho_vals, data_vals = gen_result_single(
+            st_qcs, backend=backend, shots=shots, reps=reps - already_run
+        )
+        results["data"][sweep_param]["rhos"] += rho_vals
+        results["data"][sweep_param]["raw_data"] += data_vals
 
         np.save(filename, results)
     return results
@@ -430,7 +438,7 @@ def gen_qpu_results(
         else label + "_results_" + now.strftime("%Y%m%d__%H%M%S") + ".npy"
     )
     results = (
-        results
+        copy.deepcopy(results)
         if results is not None
         else {"properties": {"backend": backend}, "data": {}}
     )
@@ -651,16 +659,18 @@ def fit_uf(steps, metric, plotting=False):
         ax.set_ylabel("<Pauli String>")
         ax.set_xlabel("$\lambda$")
 
-    popt, _ = curve_fit(
+    popt, pcov = curve_fit(
         fexp, steps, metric, p0=[0, -0.1], bounds=([-1, -np.inf], [1, 0])
     )
+
+    perr = np.sqrt(np.diag(pcov))  # 1 std
 
     if plotting:
         esteps = np.concatenate((np.array([0.1 * i for i in range(10)]), steps))
         metric_fit = fexp(esteps, *popt)
         ax.plot(esteps, metric_fit, ".--", label="fit")
         fig.tight_layout()
-    return popt[0]
+    return popt[0], perr[0]
 
 
 def fit_unitary_folding(results, deepcopy=True, plotting=False):
@@ -681,7 +691,12 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
                 metric_func=lambda res: res["parity"][pauli_string],
                 sweep_param_parser=unitary_folding_parser_factory(n=trott_step),
             )
-            parity[pauli_string] = fit_uf(steps, metric, plotting=plotting)
+
+            p_val, p_std = fit_uf(steps, metric, plotting=plotting)
+            parity[pauli_string] = (
+                p_val if p_std < np.abs(p_val) else metric[np.argsort(steps)[0]]
+            )
+            # parity[pauli_string] = metric[np.argsort(steps)[0]]
         results["analysis"][trott_step]["uf_parity"] = parity
     return results
 
@@ -694,13 +709,15 @@ def fidelity_unitary_folding(results, deepcopy=True):
         parity = res["uf_parity"]
         prob_dist = parity2prob(parity)
         ctf = CustomTomographyFitter(prob_dist)
-    
+
         try:
-            rho_fit = ctf.fit(method='cvx', trace=1, psd=True)
+            rho_fit = ctf.fit(method="cvx", trace=1, psd=True)
             fidelity = state_fidelity(rho_fit, target_state)
         except:
-            print(f"An MLE error occured while fitting results for trott_step {trott_step}!")
-        
+            print(
+                f"An MLE error occured while fitting results for trott_step {trott_step}!"
+            )
+
         # Store infidelity, rather than fidelity
         res["uf_infid"] = 1 - fidelity
 
@@ -766,7 +783,7 @@ def parity2prob(parity_results, shots=10000, num_qubits=3, return_probs=False):
 
     if return_probs:
         return prob_results
-        
+
     return count_results
 
 
