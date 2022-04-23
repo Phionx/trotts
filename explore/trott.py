@@ -670,7 +670,6 @@ def fit_uf(steps, metric, plotting=False):
         esteps = np.concatenate((np.array([0.1 * i for i in range(10)]), steps))
         metric_fit = fexp(esteps, *popt)
         ax.plot(esteps, metric_fit, ".--", label="fit")
-        fig.legend(loc="auto")
         fig.tight_layout()
     return popt[0]
 
@@ -970,7 +969,7 @@ def plot_uf_parity(results, parity_strings=None, legend=False, **kwargs):
         else:
             axs = plot_metric(
                 results,
-                metric_func=lambda res: res["parity"][parity_string],
+                metric_func=lambda res: res["uf_parity"][parity_string],
                 plot_label=f"Measured <Pauli String>",
                 plot_log=False,
                 axs=axs,
