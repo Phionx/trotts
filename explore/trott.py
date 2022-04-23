@@ -700,8 +700,10 @@ def fidelity_unitary_folding(results, deepcopy=True):
             fidelity = state_fidelity(rho_fit, target_state)
         except:
             print(f"An MLE error occured while fitting results for trott_step {trott_step}!")
-        res["uf_infid"] = fidelity
         
+        # Store infidelity, rather than fidelity
+        res["uf_infid"] = 1 - fidelity
+
     return results
 
 
