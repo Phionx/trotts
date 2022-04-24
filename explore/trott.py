@@ -11,8 +11,6 @@ import copy
 import itertools
 import warnings
 
-from regex import P
-
 warnings.filterwarnings("ignore")
 
 
@@ -572,6 +570,17 @@ def gen_data_map_single(result, deepcopy=True, num_qubits=3):
                 counts, result["filtered_data"][r].results[i].data.counts
             )  # adding counts together
         data_map[pauli_string] = counts
+
+    # TODO: clean up this kluge,
+    # which is needed after using a meas_fitter
+    # that produces counts with keys like "110" instead of "0x6"
+    for partiy_string, counts in data_map.items():
+        sample_key = list(counts.keys())[0]
+        if "0x" != sample_key[:2]:
+            data_map[partiy_string] = {
+                "0x" + str(int(k, 2)): int(v) for k, v in counts.items()
+            }
+
     result["data_map"] = data_map
     return result
 
@@ -772,6 +781,7 @@ def run_meas_calibration(results, meas_fitter=None, deepcopy=True):
             ]
         else:
             result["filtered_data"] = result["raw_data"]
+            result["raw_data"] = {}
 
     return results
 
@@ -943,16 +953,16 @@ def plot_metric(
 
     if plot_log:
         ax = axs[1][0]
-        ax.plot(1 / steps, np.log(metric), label=legend_label)
+        ax.plot(1 / steps, np.log10(metric), label=legend_label)
         ax.set_xlabel(f"1/({x_label})", fontsize=fontsize)
-        ax.set_ylabel(f"log({plot_label})", fontsize=fontsize)
+        ax.set_ylabel(f"log10({plot_label})", fontsize=fontsize)
         if legend_label is not None:
             ax.legend(fontsize=legend_fontsize, ncol=ncol)
 
         ax = axs[1][1]
-        ax.plot(steps, np.log(metric), label=legend_label)
+        ax.plot(steps, np.log10(metric), label=legend_label)
         ax.set_xlabel(f"({x_label})", fontsize=fontsize)
-        ax.set_ylabel(f"log({plot_label})", fontsize=fontsize)
+        ax.set_ylabel(f"log10({plot_label})", fontsize=fontsize)
         if legend_label is not None:
             ax.legend(fontsize=legend_fontsize, ncol=ncol)
 
