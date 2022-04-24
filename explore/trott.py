@@ -674,7 +674,7 @@ def run_metric_analysis_sweep(results, deepcopy=True):
     return results
 
 
-def fit_uf(steps, metric, plotting=False):
+def fit_uf(steps, metric, plotting=False, ax=None, label=""):
     # y = Ae^(bx) , -1 <= A <= 1, b < 0
     def fexp(x, a, b):
         return a * np.exp(b * x)
@@ -683,14 +683,19 @@ def fit_uf(steps, metric, plotting=False):
     # metric = np.concatenate((metric, np.array([0])))
 
     if plotting:
-        fig, ax = plt.subplots(1, figsize=(8, 3), dpi=200,)
-        ax.plot(steps, metric, "*", label="data")
-        ax.set_ylabel("<Pauli String>")
-        ax.set_xlabel("$\lambda$")
+        if ax is None:
+            _, ax = plt.subplots(1, figsize=(4, 3), dpi=200,)
+        fig = ax.get_figure()
+        ax.plot(steps, metric, "*", label="data " + label)
+        ax.set_ylabel("$\\langle\\alpha_1\\alpha_2\\alpha_3\\rangle$")
+        ax.set_xlabel("Scaling Factor $\lambda = 1 + \\frac{2\\beta}{n}$")
 
-    popt, pcov = curve_fit(
-        fexp, steps, metric, p0=[0, -0.1], bounds=([-3, -np.inf], [1, 0])
-    )
+    try:
+        popt, pcov = curve_fit(
+            fexp, steps, metric, p0=[0, -0.1], bounds=([-3, -np.inf], [1, 0])
+        )
+    except RuntimeError:
+        return None, 0
 
     fitted_metric = fexp(steps, *popt)
 
@@ -708,14 +713,14 @@ def fit_uf(steps, metric, plotting=False):
     if plotting:
         esteps = np.concatenate((np.array([0.1 * i for i in range(10)]), steps))
         metric_fit = fexp(esteps, *popt)
-        ax.plot(esteps, metric_fit, ".--", label="fit")
+        ax.plot(esteps, metric_fit, "--", label="fit " + label)
         fig.tight_layout()
         # print(popt, perr)
         print("r^2: ", r2)
     return popt[0], r2
 
 
-def fit_unitary_folding(results, deepcopy=True, plotting=False):
+def fit_unitary_folding(results, deepcopy=True, plotting=False, min_r2=0.94):
     results = copy.deepcopy(results) if deepcopy else results
 
     print("Running Unitary Folding Extrapolation:")
@@ -737,7 +742,7 @@ def fit_unitary_folding(results, deepcopy=True, plotting=False):
             )
 
             p_fit, r2_val = fit_uf(steps, metric, plotting=plotting)
-            p_val = p_fit if r2_val > 0.94 else metric[np.argsort(steps)[0]]
+            p_val = p_fit if r2_val > min_r2 else metric[np.argsort(steps)[0]]
             # parity[pauli_string] = p_val
             parity[pauli_string] = max(p_val, -1) if p_val <= 0 else min(p_val, 1)
         results["analysis"][trott_step]["uf_parity"] = parity
@@ -772,7 +777,10 @@ def fidelity_unitary_folding(results, deepcopy=True):
 
 def run_meas_calibration(results, meas_fitter=None, deepcopy=True):
     results = copy.deepcopy(results) if deepcopy else results
-    print("Running Measurement Calibration:")
+    if meas_fitter is not None:
+        print("Running Measurement Error Mitigation:")
+    else:
+        print("Skipping Measurement Error Mitigation:")
     for sweep_param, result in tqdm(results["data"].items()):
         if meas_fitter is not None:
             result["filtered_data"] = [
@@ -786,6 +794,128 @@ def run_meas_calibration(results, meas_fitter=None, deepcopy=True):
     return results
 
 
+def fit_trott(
+    steps, metric, plotting=False, y_label="<Pauli String>", ax=None, label=""
+):
+    # y = Ae^(bx) , -1 <= A <= 1, b < 0
+    def fexp(x, a, b, c):
+        return (a - c) * np.exp(b * x) + c
+
+    if plotting:
+        if ax is None:
+            _, ax = plt.subplots(1, figsize=(8, 3), dpi=200,)
+        fig = ax.get_figure()
+        ax.plot(steps, metric, "*", label="data " + label)
+        ax.set_ylabel(y_label)
+        ax.set_xlabel("1/(# of Trotterization Steps)")
+
+    try:
+        popt, pcov = curve_fit(
+            fexp,
+            steps,
+            metric,
+            p0=[0, 0.1, 0],
+            bounds=([-3, 0, -np.inf], [3, np.inf, np.inf]),
+        )
+    except RuntimeError:
+        return None, 0
+
+    fitted_metric = fexp(steps, *popt)
+
+    # residual sum of squares
+    ss_res = np.sum((metric - fitted_metric) ** 2)
+
+    # total sum of squares
+    ss_tot = np.sum((metric - np.mean(metric)) ** 2)
+
+    # r-squared
+    r2 = 1 - (ss_res / ss_tot)
+
+    perr = np.sqrt(np.diag(pcov))  # 1 std
+
+    if plotting:
+        esteps = np.concatenate(
+            (np.array([steps[0] / 10 * i for i in range(10)]), steps)
+        )
+        metric_fit = fexp(esteps, *popt)
+        ax.plot(esteps, metric_fit, "--", label="fit " + label)
+        fig.tight_layout()
+        # print(popt, perr)
+        print("r^2: ", r2)
+    return popt[0], r2
+
+
+def trott_step_parser_factory(trott_step_min=5, trott_step_max=10):
+    def trott_step_parser(sweep_param):
+        skip = sweep_param < trott_step_min or sweep_param > trott_step_max
+        return 1 / sweep_param, skip
+
+    return trott_step_parser
+
+
+def fit_trott_extrapolation(
+    results,
+    deepcopy=True,
+    plotting=False,
+    trott_step_min=5,
+    trott_step_max=10,
+    min_r2=0.99,
+):
+    results = copy.deepcopy(results) if deepcopy else results
+
+    print("Running Trotterization Extrapolation:")
+
+    trott_step_parser = trott_step_parser_factory(trott_step_min=5, trott_step_max=10)
+    pauli_strings = list(list(results["analysis"].values())[0]["uf_parity"].keys())
+    parity = {}
+    for pauli_string in tqdm(pauli_strings):
+        steps, metric = extract_metric(
+            results,
+            metric_func=lambda res: res["uf_parity"][pauli_string],
+            sweep_param_parser=trott_step_parser_factory(),
+            data_key="analysis",
+        )
+        p_fit, r2_val = fit_trott(
+            steps, metric, plotting=False, y_label=f"<{pauli_string}>"
+        )
+        p_val = p_fit if r2_val >= min_r2 else metric[np.argsort(steps)[0]]
+        parity[pauli_string] = max(p_val, -1) if p_val <= 0 else min(p_val, 1)
+
+        if plotting and r2_val >= min_r2:
+            print(f"{pauli_string}: r2 ({r2_val}) , extrapolated val: {p_fit}")
+            fit_trott(steps, metric, plotting=True, y_label=f"<{pauli_string}>")
+
+    results["total"] = {}
+    results["total"]["trott_parity"] = parity
+    return results
+
+
+def fidelity_trott_extrapolation(results, deepcopy=True):
+    results = copy.deepcopy(results) if deepcopy else results
+
+    print("Calculating Trotterization Extrapolated Fidelity.")
+
+    target_state, _ = gen_target()
+
+    parity = results["total"]["trott_parity"]
+    prob_dist = parity2prob(parity)
+    ctf = CustomTomographyFitter(prob_dist)
+
+    try:
+        rho_fit = ctf.fit(method="cvx", trace=1, psd=True)
+        fidelity = state_fidelity(rho_fit, target_state)
+    except:
+        print(
+            f"An MLE error occured while fitting trotterization extrapolated results!"
+        )
+        fidelity = 0  # TODO: remove later
+
+    # Store infidelity, rather than fidelity
+    results["total"]["trott_infid"] = 1 - fidelity
+
+    return results
+
+
 def run_analysis(
     results,
     deepcopy=True,
@@ -793,6 +923,10 @@ def run_analysis(
     plotting=False,
     unitary_folding=True,
     meas_fitter=None,
+    trott_step_min: int = 5,
+    trott_step_max: int = 10,
+    min_r2_uf=0.94,
+    min_r2_trott=0.99,
 ):
     results = copy.deepcopy(results) if deepcopy else results
 
@@ -801,8 +935,19 @@ def run_analysis(
     gen_parity_sweep(results, deepcopy=False)
     run_metric_analysis_sweep(results, deepcopy=False)
     if unitary_folding:
-        fit_unitary_folding(results, deepcopy=False, plotting=plotting)
+        fit_unitary_folding(
+            results, deepcopy=False, plotting=plotting, min_r2=min_r2_uf
+        )
         fidelity_unitary_folding(results, deepcopy=False)
+        fit_trott_extrapolation(
+            results,
+            deepcopy=False,
+            plotting=plotting,
+            trott_step_max=trott_step_max,
+            trott_step_min=trott_step_min,
+            min_r2=min_r2_trott,
+        )
+        fidelity_trott_extrapolation(results, deepcopy=False)
     return results
 
 
@@ -900,6 +1045,10 @@ def extract_metric(results, metric_func=None, sweep_param_parser=None, data_key=
 
     steps = np.array(steps)
     metric = np.array(metric)
+
+    steps_sorted_indx = np.argsort(steps)
+    steps = steps[steps_sorted_indx]
+    metric = metric[steps_sorted_indx]
     return steps, metric
 
 
